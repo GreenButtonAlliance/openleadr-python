@@ -48,6 +48,12 @@ VEN.
         for time, value in data:
             print(f"Ven {ven_id} reported {measurement} = {value} at time {time} for resource {resource_id}")
 
+    async def event_response_callback(ven_id, event_id, opt_type):
+        """
+        Callback that receives the response from a VEN to an Event.
+        """
+        print(f"VEN {ven_id} responded to Event {event_id} with: {opt_type}")
+
     # Create the server object
     server = OpenADRServer(vtn_id='myvtn')
 
@@ -59,11 +65,12 @@ VEN.
 
     # Add a prepared event for a VEN that will be picked up when it polls for new messages.
     server.add_event(ven_id='ven_id_123',
-                     event_name='simple',
-                     event_type='level',
+                     signal_name='simple',
+                     signal_type='level',
                      intervals=[{'dtstart': datetime(2021, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
                                  'duration': timedelta(minutes=10),
-                                 'signal_payload': 1}])
+                                 'signal_payload': 1}],
+                     callback=event_response_callback)
 
     # Run the server on the asyncio event loop
     loop = asyncio.get_event_loop()
