@@ -18,8 +18,7 @@ from aiohttp import web
 from openleadr.service import EventService, PollService, RegistrationService, ReportService, \
                               VTNService
 from openleadr.messaging import create_message
-from openleadr import objects
-from openleadr import utils
+from openleadr import objects, enums, utils
 from functools import partial
 from datetime import datetime, timedelta, timezone
 import asyncio
@@ -27,7 +26,6 @@ import inspect
 import logging
 import ssl
 import re
-import sys
 logger = logging.getLogger('openleadr')
 
 
@@ -150,11 +148,9 @@ class OpenADRServer:
         await self.run()
 
     async def stop(self):
-        if sys.version_info.minor >= 8:
-            delayed_call_tasks = [task for task in asyncio.all_tasks()
-                                  if task.get_name().startswith('DelayedCall')]
-            for task in delayed_call_tasks:
-                task.cancel()
+        """
+        Stop the server in a graceful manner.
+        """
         await self.app_runner.cleanup()
 
     def add_event(self, ven_id, signal_name, signal_type, intervals, callback=None, event_id=None,
@@ -257,7 +253,7 @@ class OpenADRServer:
                                      "'ven_id' (str), 'event_id' (str), 'opt_type' (str). Please fix "
                                      "your 'callback' handler.")
 
-        event_id = utils.getmember(utils.getmember(event, 'event_descriptor'), 'event_id')
+        event_id = utils.getmember(event, 'event_descriptor.event_id')
         # Create the event queue if it does not exist yet
         if ven_id not in self.events:
             self.events[ven_id] = []
@@ -270,6 +266,23 @@ class OpenADRServer:
         if callback is not None:
             self.event_callbacks[event_id] = (event, callback)
         return event_id
+
+    def cancel_event(self, ven_id, event_id):
+        """
+        Mark the indicated event as cancelled.
+        """
+        event = utils.find_by(self.events[ven_id], 'event_descriptor.event_id', event_id)
+        if not event:
+            logger.error("""The event you tried to cancel was not found. """
+                         """Was looking for event_id {event_id} for ven {ven_id}."""
+                         """Only found these: [getmember(e, 'event_descriptor.event_id')
+                                               for e in self.events[ven_id]]""")
+            return
+
+        # Set the Event Status to cancelled
+        utils.setmember(event, 'event_descriptor.event_status', enums.EVENT_STATUS.CANCELLED)
+        utils.increment_event_modification_number(event)
+        self.events_updated[ven_id] = True
 
     def add_handler(self, name, func):
         """

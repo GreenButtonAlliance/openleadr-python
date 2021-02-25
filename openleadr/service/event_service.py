@@ -16,7 +16,7 @@
 
 from . import service, handler, VTNService
 import asyncio
-from openleadr import utils, errors
+from openleadr import utils, errors, enums
 import logging
 logger = logging.getLogger('openleadr')
 
@@ -42,9 +42,9 @@ class EventService(VTNService):
             if ven_id in self.events and self.events[ven_id]:
                 events = utils.order_events(self.events[ven_id])
                 for event in events:
-                    event_status = utils.getmember(utils.getmember(event, 'event_descriptor'), 'event_status')
+                    event_status = utils.getmember(event, 'event_descriptor.event_status')
                     # Pop the event from the events so that this is the last time it is communicated
-                    if event_status == 'completed':
+                    if event_status == enums.EVENT_STATUS.COMPLETED:
                         self.events[ven_id].pop(self.events[ven_id].index(event))
             else:
                 events = None
@@ -82,10 +82,20 @@ class EventService(VTNService):
         if self.polling_method == 'internal':
             for event_response in payload['event_responses']:
                 event_id = event_response['event_id']
+                modification_number = event_response['modification_number']
                 opt_type = event_response['opt_type']
-                if event_id not in [utils.getmember(utils.getmember(event, 'event_descriptor'), 'event_id')
-                                    for event in self.events[ven_id]] + self.completed_event_ids.get(ven_id, []):
-                    raise errors.InvalidIdError
+                event = utils.find_by(self.events[ven_id],
+                                      'event_descriptor.event_id', event_id,
+                                      'event_descriptor.modification_number', modification_number)
+                if not event:
+                    if event_id not in self.completed_event_ids.get(ven_id, []):
+                        logger.warning(f"""Got an oadrCreatedEvent message from ven '{ven_id}' """
+                                       f"""for event '{event_id}' with modification number """
+                                       f"""{modification_number} that does not exist.""")
+                        raise errors.InvalidIdError
+                # Remove the event from the events list if the cancellation is confirmed.
+                if utils.getmember(event, 'event_descriptor.event_status') == enums.EVENT_STATUS.CANCELLED:
+                    utils.pop_by(self.events[ven_id], 'event_descriptor.event_id', event_id)
                 if event_response['event_id'] in self.event_callbacks:
                     event, callback = self.event_callbacks.pop(event_id)
                     if isinstance(callback, asyncio.Future):

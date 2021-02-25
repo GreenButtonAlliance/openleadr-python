@@ -18,8 +18,6 @@ import asyncio
 import inspect
 import logging
 import ssl
-import sys
-import random
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from http import HTTPStatus
@@ -81,7 +79,7 @@ class OpenADRClient:
         self.client_session = None
         self.report_queue_task = None
 
-        self.received_events = {}               # Holds the events that we received.
+        self.received_events = []               # Holds the events that we received.
         self.responded_events = {}              # Holds the events that we already saw.
 
         self.cert_path = cert
@@ -133,7 +131,7 @@ class OpenADRClient:
         # Set up automatic polling
         if self.poll_frequency > timedelta(hours=24):
             logger.warning("Polling with intervals of more than 24 hours is not supported. "
-                           "Will use 24 hours as the logging interval.")
+                           "Will use 24 hours as the polling interval.")
             self.poll_frequency = timedelta(hours=24)
         cron_config = utils.cron_config(self.poll_frequency, randomize_seconds=self.allow_jitter)
 
@@ -153,10 +151,6 @@ class OpenADRClient:
             self.scheduler.shutdown()
         if self.report_queue_task:
             self.report_queue_task.cancel()
-        if sys.version_info.minor > 8:
-            delayed_call_tasks = [task for task in asyncio.all_tasks() if task.get_name().startswith('DelayedCall')]
-            for task in delayed_call_tasks:
-                task.cancel()
         await self.client_session.close()
         await asyncio.sleep(0)
 
@@ -408,7 +402,7 @@ class OpenADRClient:
     #                                                                         #
     ###########################################################################
 
-    async def request_event(self, reply_limit=1):
+    async def request_event(self, reply_limit=None):
         """
         Request the next Event from the VTN, if it has any.
         """
@@ -420,7 +414,7 @@ class OpenADRClient:
         response_type, response_payload = await self._perform_request(service, message)
         return response_type, response_payload
 
-    async def created_event(self, request_id, event_id, opt_type, modification_number=1):
+    async def created_event(self, request_id, event_id, opt_type, modification_number=0):
         """
         Inform the VTN that we created an event.
         """
@@ -614,31 +608,13 @@ class OpenADRClient:
             expected_len = len(report_request['r_ids']) * int(report_interval / sampling_interval)
             if len(outgoing_report.intervals) == expected_len:
                 logger.info("The report is now complete with all the values. Will queue for sending.")
-                if self.allow_jitter:
-                    delay = random.uniform(0, min(30, report_interval / 2))
-                    if sys.version_info.minor >= 8:
-                        name = {'name': f'DelayedCall-OutgoingReport-{utils.generate_id()}'}
-                    else:
-                        name = {}
-                    self.loop.create_task(utils.delayed_call(func=self.pending_reports.put(outgoing_report),
-                                                             delay=delay), **name)
-                else:
-                    await self.pending_reports.put(self.incomplete_reports.pop(report_request_id))
+                await self.pending_reports.put(self.incomplete_reports.pop(report_request_id))
             else:
                 logger.debug("The report is not yet complete, will hold until it is.")
                 self.incomplete_reports[report_request_id] = outgoing_report
         else:
             logger.info("Report will be sent now.")
-            if self.allow_jitter:
-                delay = random.uniform(0, min(30, granularity.total_seconds() / 2))
-                if sys.version_info.minor >= 8:
-                    name = {'name': f'DelayedCall-OutgoingReport-{utils.generate_id()}'}
-                else:
-                    name = {}
-                self.loop.create_task(utils.delayed_call(func=self.pending_reports.put(outgoing_report),
-                                                         delay=delay), **name)
-            else:
-                await self.pending_reports.put(outgoing_report)
+            await self.pending_reports.put(outgoing_report)
 
     async def cancel_report(self, payload):
         """
@@ -649,19 +625,20 @@ class OpenADRClient:
         """
         A Queue worker that pushes out the pending reports.
         """
-
-        while True:
-            report = await self.pending_reports.get()
-            service = 'EiReport'
-            message = self._create_message('oadrUpdateReport', reports=[report])
-
-            try:
-                response_type, response_payload = await self._perform_request(service, message)
-            except Exception as err:
-                logger.error(f"Unable to send the report to the VTN. Error: {err}")
-            else:
-                if 'cancel_report' in response_payload:
-                    await self.cancel_report(response_payload['cancel_report'])
+        try:
+            while True:
+                report = await self.pending_reports.get()
+                service = 'EiReport'
+                message = self._create_message('oadrUpdateReport', reports=[report])
+                try:
+                    response_type, response_payload = await self._perform_request(service, message)
+                except Exception as err:
+                    logger.error(f"Unable to send the report to the VTN. Error: {err}")
+                else:
+                    if 'cancel_report' in response_payload:
+                        await self.cancel_report(response_payload['cancel_report'])
+        except asyncio.CancelledError:
+            return
 
     ###########################################################################
     #                                                                         #
@@ -682,7 +659,8 @@ class OpenADRClient:
         """
         Placeholder for the on_update_event handler.
         """
-        logger.warning("You should implement your own on_update_event handler. This handler receives "
+        logger.warning("An Event was updated, but you don't have an on_updated_event handler configured. "
+                       "You should implement your own on_update_event handler. This handler receives "
                        "an Event dict and should return either 'optIn' or 'optOut' based on your "
                        "choice. Will re-use the previous opt status for this event_id for now")
         if event['event_descriptor']['event_id'] in self.events:
@@ -752,21 +730,25 @@ class OpenADRClient:
                 event_id = event['event_descriptor']['event_id']
                 event_status = event['event_descriptor']['event_status']
                 modification_number = event['event_descriptor']['modification_number']
-                if event_id in self.received_events:
-                    if self.received_events[event_id]['event_descriptor']['modification_number'] == modification_number:
+                received_event = utils.find_by(self.received_events, 'event_descriptor.event_id', event_id)
+                if received_event:
+                    if received_event['event_descriptor']['modification_number'] == modification_number:
                         # Re-submit the same opt type as we already had previously
                         result = self.responded_events[event_id]
                     else:
+                        # Replace the event with the fresh copy
+                        utils.pop_by(self.received_events, 'event_descriptor.event_id', event_id)
+                        self.received_events.append(event)
                         # Wait for the result of the on_update_event handler
-                        result = self.on_update_event(event)
+                        result = await utils.await_if_required(self.on_update_event(event))
                 else:
                     # Wait for the result of the on_event
-                    self.received_events[event_id] = event
+                    self.received_events.append(event)
                     result = self.on_event(event)
                 if asyncio.iscoroutine(result):
                     result = await result
                 results.append(result)
-                if event_status == 'completed':
+                if event_status in (enums.EVENT_STATUS.COMPLETED, enums.EVENT_STATUS.CANCELLED):
                     self.responded_events.pop(event_id)
                 else:
                     self.responded_events[event_id] = result
@@ -784,7 +766,7 @@ class OpenADRClient:
                             'response_description': 'OK',
                             'opt_type': results[i],
                             'request_id': message['request_id'],
-                            'modification_number': 1,
+                            'modification_number': modification_number,
                             'event_id': events[i]['event_descriptor']['event_id']}
                            for i, event in enumerate(events)
                            if event['response_required'] == 'always'
@@ -806,13 +788,13 @@ class OpenADRClient:
 
     async def _event_cleanup(self):
         """
-        Periodic task that will clean up completed events in our memory.
+        Periodic task that will clean up completed and cancelled events in our memory.
         """
-        print("Checking for stale events")
-        for event in list(self.received_events):
-            if utils.determine_event_status(self.received_events[event]['active_period']) == 'completed':
-                logger.debug(f"Removing event {event} because it is completed.")
-                self.received_events.pop(event)
+        for event in self.received_events:
+            if event['event_descriptor']['event_status'] == 'cancelled' or \
+                    utils.determine_event_status(event['active_period']) == 'completed':
+                logger.info(f"Removing event {event} because it is no longer relevant.")
+                self.received_events.pop(self.received_events.index(event))
 
     async def _poll(self):
         logger.debug("Now polling for new messages")

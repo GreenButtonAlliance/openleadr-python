@@ -54,7 +54,18 @@ autoclass_content = 'both'
 # a list of builtin themes.
 #
 html_theme = 'alabaster'
-html_logo = 'logo-tall.png'
+# html_logo = 'logo-tall.png'
+html_theme_options = {
+    'logo': 'logo-tall.png',
+    'logo_name': False,
+    'github_button': 'true',
+    'github_type': 'star',
+    'github_count': 'true',
+    'github_user': 'openleadr',
+    'github_repo': 'openleadr-python',
+    'font_family': 'sans-serif',
+    'font_size': 8
+}
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
@@ -62,5 +73,4 @@ html_logo = 'logo-tall.png'
 html_static_path = ['_static']
 
 
-def setup(app):
-    app.add_css_file('css/custom.css')  # may also be an URL
+

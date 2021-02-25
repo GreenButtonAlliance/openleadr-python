@@ -19,7 +19,10 @@ VEN.
 
     import asyncio
     from datetime import datetime, timezone, timedelta
-    from openleadr import OpenADRServer
+    from openleadr import OpenADRServer, enable_default_logging
+    from functools import partial
+
+    enable_default_logging()
 
     async def on_create_party_registration(registration_info):
         """
@@ -233,7 +236,7 @@ If you want to add an event and wait for the response in a single coroutine, you
 
 
 A word on event targets
-~~~~~~~~~~~~~~~~~~~~~~~
+-----------------------
 
 The Target of your Event is an indication for the VEN which resources or devices should be affected. You can supply the target of the event in serveral ways:
 

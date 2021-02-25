@@ -138,6 +138,7 @@ async def test_client_exception_event_handler(caplog):
 
 @pytest.mark.asyncio
 async def test_client_good_event_handler(caplog):
+    caplog.clear()
     caplog.set_level(logging.WARNING)
     logger = logging.getLogger('openleadr')
     logger.setLevel(logging.DEBUG)
@@ -167,10 +168,14 @@ async def test_client_good_event_handler(caplog):
     print("Waiting for a response to the event")
     result = await event_confirm_future
     assert result == 'optIn'
+    print("-"*80)
+    print("THE CAPLOG RECORDS ARE:")
+    print(caplog.records)
+    print("-"*80)
     assert len(caplog.records) == 0
     await client.stop()
     await server.stop()
-    # await asyncio.sleep(1)
+    await asyncio.gather(*[t for t in asyncio.all_tasks()][1:])
 
 @pytest.mark.asyncio
 async def test_server_warning_conflicting_poll_methods(caplog):
@@ -332,11 +337,13 @@ async def test_client_warning_no_update_event_handler(caplog):
     server.events_updated['venid'] = True
 
     await asyncio.sleep(1)
-    assert ("You should implement your own on_update_event handler. This handler receives "
+    assert ("An Event was updated, but you don't have an on_updated_event handler configured. "
+            "You should implement your own on_update_event handler. This handler receives "
             "an Event dict and should return either 'optIn' or 'optOut' based on your "
             "choice. Will re-use the previous opt status for this event_id for now") in [record.msg for record in caplog.records]
     await client.stop()
     await server.stop()
+    await asyncio.gather(*[t for t in asyncio.all_tasks()][1:])
 
 @pytest.mark.asyncio
 async def test_server_add_event_with_wrong_callback_signature(caplog):

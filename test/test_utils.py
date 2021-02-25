@@ -24,6 +24,9 @@ def test_getmember():
     obj = dc()
     assert utils.getmember(obj, 'a') == 2
 
+    obj = {'a': {'b': 1}}
+    assert utils.getmember(obj, 'a.b') == 1
+
 def test_setmember():
     obj = {'a': 1}
     utils.setmember(obj, 'a', 10)
@@ -40,24 +43,6 @@ def test_setmember_nested():
     assert utils.getmember(utils.getmember(dc_parent, 'a'), 'a') == 2
     utils.setmember(utils.getmember(dc_parent, 'a'), 'a', 3)
     assert dc_parent.a.a == 3
-
-@pytest.mark.asyncio
-async def test_delayed_call_with_func():
-    async def myfunc():
-        pass
-    await utils.delayed_call(myfunc, delay=0.1)
-
-@pytest.mark.asyncio
-async def test_delayed_call_with_coro():
-    async def mycoro():
-        pass
-    await utils.delayed_call(mycoro(), delay=0.1)
-
-@pytest.mark.asyncio
-async def test_delayed_call_with_coro_func():
-    async def mycoro():
-        pass
-    await utils.delayed_call(mycoro, delay=0.1)
 
 def test_determine_event_status_completed():
     active_period = {'dtstart': datetime.now(timezone.utc) - timedelta(seconds=10),
@@ -118,51 +103,6 @@ def test_cron_config():
                                                                                 'minute': '*',
                                                                                 'hour': '*',
                                                                                 'jitter': 1}
-
-def test_get_event_from_deque():
-    d = deque()
-    now = datetime.now(timezone.utc)
-    event1 = objects.Event(event_descriptor=objects.EventDescriptor(event_id='event123',
-                                                                    event_status='far',
-                                                                    modification_number='1',
-                                                                    market_context='http://marketcontext01'),
-                           event_signals=[objects.EventSignal(signal_name='simple',
-                                                              signal_type='level',
-                                                              signal_id=utils.generate_id(),
-                                                              intervals=[objects.Interval(dtstart=now,
-                                                                                          duration=timedelta(minutes=10),
-                                                                                          signal_payload=1)])],
-                            targets=[{'ven_id': 'ven123'}])
-    msg_one = {'message': 'one'}
-    msg_two = {'message': 'two'}
-    msg_three = {'message': 'three'}
-    event2 = objects.Event(event_descriptor=objects.EventDescriptor(event_id='event123',
-                                                                    event_status='far',
-                                                                    modification_number='1',
-                                                                    market_context='http://marketcontext01'),
-                           event_signals=[objects.EventSignal(signal_name='simple',
-                                                              signal_type='level',
-                                                              signal_id=utils.generate_id(),
-                                                              intervals=[objects.Interval(dtstart=now,
-                                                                                          duration=timedelta(minutes=10),
-                                                                                          signal_payload=1)])],
-                            targets=[{'ven_id': 'ven123'}])
-
-    d.append(event1)
-    d.append(msg_one)
-    d.append(msg_two)
-    d.append(msg_three)
-    d.append(event2)
-    assert utils.get_next_event_from_deque(d) is event1
-    assert utils.get_next_event_from_deque(d) is event2
-    assert utils.get_next_event_from_deque(d) is None
-    assert utils.get_next_event_from_deque(d) is None
-    assert len(d) == 3
-    assert d.popleft() is msg_one
-    assert d.popleft() is msg_two
-    assert d.popleft() is msg_three
-    assert len(d) == 0
-    assert utils.get_next_event_from_deque(d) is None
 
 
 def test_validate_report_measurement_dict_missing_items(caplog):
@@ -255,6 +195,19 @@ def test_find_by_with_missing_member():
                    {'a': 321, 'b': 654, 'c': 1000}]
     result = utils.find_by(search_list, 'c', 1000)
     assert result == {'a': 321, 'b': 654, 'c': 1000}
+
+def test_find_by_nested_dict():
+    search_list = [{'dict1': {'a': 123, 'b': 456}},
+                   {'dict1': {'a': 321, 'b': 654, 'c': 1000}}]
+    result = utils.find_by(search_list, 'dict1.c', 1000)
+    assert result == {'dict1': {'a': 321, 'b': 654, 'c': 1000}}
+
+def test_pop_by():
+    search_list = [{'dict1': {'a': 123, 'b': 456}},
+                   {'dict1': {'a': 321, 'b': 654, 'c': 1000}}]
+    result = utils.pop_by(search_list, 'dict1.c', 1000)
+    assert result == {'dict1': {'a': 321, 'b': 654, 'c': 1000}}
+    assert result not in search_list
 
 def test_ensure_str():
     assert utils.ensure_str("Hello") == "Hello"
@@ -429,3 +382,26 @@ def test_order_events():
     event_1_as_dict = asdict(event_1_active_high_prio)
     ordered_events = utils.order_events(event_1_as_dict)
     assert ordered_events == [event_1_as_dict]
+
+def test_increment_modification_number():
+    now = datetime.now(timezone.utc)
+    event = objects.Event(event_descriptor=objects.EventDescriptor(event_id='event001',
+                                                                   modification_number=0,
+                                                                   created_date_time=now,
+                                                                   event_status='far',
+                                                                   priority=1,
+                                                                   market_context='http://context01'),
+                                           active_period=objects.ActivePeriod(dtstart=now - timedelta(minutes=5),
+                                                                              duration=timedelta(minutes=10)),
+                                           event_signals=[objects.EventSignal(intervals=[objects.Interval(dtstart=now,
+                                                                                                          duration=timedelta(minutes=10),
+                                                                                                          signal_payload=1)],
+                                                                              signal_name='simple',
+                                                                              signal_type='level',
+                                                                              signal_id='signal001')],
+                                           targets=[{'ven_id': 'ven001'}])
+
+    utils.increment_event_modification_number(event)
+    assert utils.getmember(event, 'event_descriptor.modification_number') == 1
+    utils.increment_event_modification_number(event)
+    assert utils.getmember(event, 'event_descriptor.modification_number') == 2
