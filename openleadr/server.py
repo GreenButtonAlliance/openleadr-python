@@ -48,7 +48,7 @@ class OpenADRServer:
     def __init__(self, vtn_id, cert=None, key=None, passphrase=None, fingerprint_lookup=None,
                  show_fingerprint=True, http_port=8080, http_host='127.0.0.1', http_cert=None,
                  http_key=None, http_key_passphrase=None, http_path_prefix='/OpenADR2/Simple/2.0b',
-                 requested_poll_freq=timedelta(seconds=10), http_ca_file=None):
+                 requested_poll_freq=timedelta(seconds=10), http_ca_file=None, ven_lookup=None):
         """
         Create a new OpenADR VTN (Server).
 
@@ -71,6 +71,8 @@ class OpenADRServer:
         :param str http_key: The path to the PEM private key for securing HTTP traffic.
         :param str http_ca_file: The path to the CA-file that client certificates are checked against.
         :param str http_key_passphrase: The passphrase for the HTTP private key.
+        :param ven_lookup: A callback that takes a ven_id and returns a dict containing the
+                           ven_id, ven_name, fingerprint and registration_id.
         """
         # Set up the message queues
 
@@ -90,6 +92,9 @@ class OpenADRServer:
             http_path_prefix = http_path_prefix[:-1]
         self.app.add_routes([web.post(f"{http_path_prefix}/{s.__service_name__}", s.handler)
                              for s in self.services.values()])
+
+        # Add a reference to the openadr VTN to the aiohttp 'app'
+        self.app['server'] = self
 
         # Configure the web server
         self.http_port = http_port
@@ -122,7 +127,18 @@ class OpenADRServer:
                 print("")
         VTNService._create_message = partial(create_message, cert=cert, key=key,
                                              passphrase=passphrase)
-        VTNService.fingerprint_lookup = staticmethod(fingerprint_lookup)
+        if fingerprint_lookup is not None:
+            logger.warning("DeprecationWarning: the argument 'fingerprint_lookup' is deprecated and "
+                           "is replaced by 'ven_lookup'. 'fingerprint_lookup' will be removed in a "
+                           "future version of OpenLEADR. Please see "
+                           "https://openleadr.org/docs/server.html#things-you-should-implement.")
+            VTNService.fingerprint_lookup = staticmethod(fingerprint_lookup)
+        if ven_lookup is None:
+            logger.warning("If you provide a 'ven_lookup' to your OpenADRServer() init, OpenLEADR can "
+                           "automatically issue ReregistrationRequests for VENs that don't exist in "
+                           "your system. Please see https://openleadr.org/docs/server.html#things-you-should-implement.")
+        else:
+            VTNService.ven_lookup = staticmethod(ven_lookup)
         self.__setattr__ = self.add_handler
 
     async def run(self):
@@ -199,6 +215,14 @@ class OpenADRServer:
             targets = utils.ungroup_targets_by_type(targets_by_type)
         if not isinstance(targets, list):
             targets = [targets]
+        if signal_type not in enums.SIGNAL_TYPE.values:
+            raise ValueError(f"""The signal_type must be one of '{"', '".join(enums.SIGNAL_TYPE.values)}', """
+                             f"""you specified: '{signal_type}'.""")
+        if signal_name not in enums.SIGNAL_NAME.values and not signal_name.startswith('x-'):
+            raise ValueError(f"""The signal_name must be one of '{"', '".join(enums.SIGNAL_TYPE.values)}', """
+                             f"""or it must begin with 'x-'. You specified: '{signal_name}'""")
+        if not intervals or not isinstance(intervals, (list, tuple)) or len(intervals) == 0:
+            raise ValueError(f"The intervals must be a list of intervals, you specified: {intervals}")
 
         event_descriptor = objects.EventDescriptor(event_id=event_id,
                                                    modification_number=0,

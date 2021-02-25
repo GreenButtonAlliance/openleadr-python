@@ -41,7 +41,7 @@ class OpenADRClient:
     """
     def __init__(self, ven_name, vtn_url, debug=False, cert=None, key=None,
                  passphrase=None, vtn_fingerprint=None, show_fingerprint=True, ca_file=None,
-                 allow_jitter=True):
+                 allow_jitter=True, ven_id=None):
         """
         Initializes a new OpenADR Client (Virtual End Node)
 
@@ -52,19 +52,22 @@ class OpenADRClient:
                          for signing messages.
         :param str key: The path to a PEM-formatted Private Key file to use
                         for signing messages.
-        :param str fingerprint: The fingerprint for the VTN's certificate to
+        :param str passphrase: The passphrase for the Private Key
+        :param str vtn_fingerprint: The fingerprint for the VTN's certificate to
                                 verify incomnig messages
         :param str show_fingerprint: Whether to print your own fingerprint
                                      on startup. Defaults to True.
         :param str ca_file: The path to the PEM-formatted CA file for validating the VTN server's
                             certificate.
+        :param str ven_id: The ID for this VEN. If you leave this blank,
+                           a VEN_ID will be assigned by the VTN.
         """
 
         self.ven_name = ven_name
         if vtn_url.endswith("/"):
             vtn_url = vtn_url[:-1]
         self.vtn_url = vtn_url
-        self.ven_id = None
+        self.ven_id = ven_id
         self.registration_id = None
         self.poll_frequency = None
         self.vtn_fingerprint = vtn_fingerprint
@@ -115,7 +118,7 @@ class OpenADRClient:
         # if not hasattr(self, 'on_event'):
         #     raise NotImplementedError("You must implement on_event.")
         self.loop = asyncio.get_event_loop()
-        await self.create_party_registration()
+        await self.create_party_registration(ven_id=self.ven_id)
 
         if not self.ven_id:
             logger.error("No VEN ID received from the VTN, aborting.")
@@ -629,7 +632,10 @@ class OpenADRClient:
             while True:
                 report = await self.pending_reports.get()
                 service = 'EiReport'
-                message = self._create_message('oadrUpdateReport', reports=[report])
+                message = self._create_message('oadrUpdateReport',
+                                               ven_id=self.ven_id,
+                                               request_id=utils.generate_id(),
+                                               reports=[report])
                 try:
                     response_type, response_payload = await self._perform_request(service, message)
                 except Exception as err:
@@ -673,6 +679,22 @@ class OpenADRClient:
 
     ###########################################################################
     #                                                                         #
+    #                             EMPTY RESPONSES                             #
+    #                                                                         #
+    ###########################################################################
+
+    async def send_response(self, service, response_code=200, response_description="OK", request_id=None):
+        """
+        Send an empty oadrResponse, for instance after receiving oadrRequestReregistration.
+        """
+        msg = self._create_message('oadrResponse',
+                                   response={'response_code': response_code,
+                                             'response_description': response_description,
+                                             'request_id': request_id})
+        await self._perform_request(service, msg)
+
+    ###########################################################################
+    #                                                                         #
     #                                  LOW LEVEL                              #
     #                                                                         #
     ###########################################################################
@@ -697,10 +719,12 @@ class OpenADRClient:
         except Exception as err:
             logger.error(f"Request error {err.__class__.__name__}:{err}")
             return None, {}
+        if len(content) == 0:
+            return None
         try:
             tree = validate_xml_schema(content)
             if self.vtn_fingerprint:
-                validate_xml_signature(tree)
+                validate_xml_signature(tree, cert_fingerprint=self.vtn_fingerprint)
             message_type, message_payload = parse_message(content)
         except XMLSyntaxError as err:
             logger.warning(f"Incoming message did not pass XML schema validation: {err}")
@@ -802,16 +826,19 @@ class OpenADRClient:
         if response_type is None:
             return
 
-        if response_type == 'oadrResponse':
-            logger.debug("No events or reports available")
+        elif response_type == 'oadrResponse':
+            logger.debug("Received empty response from the VTN.")
             return
 
-        if response_type == 'oadrRequestReregistration':
+        elif response_type == 'oadrRequestReregistration':
             logger.info("The VTN required us to re-register. Calling the registration procedure.")
+            await self.send_response(service='EiRegisterParty')
             await self.create_party_registration()
+            if self.reports:
+                await self.register_reports(self.reports)
 
-        if response_type == 'oadrDistributeEvent':
-            if len(response_payload['events']) > 0:
+        elif response_type == 'oadrDistributeEvent':
+            if 'events' in response_payload and len(response_payload['events']) > 0:
                 await self._on_event(response_payload)
 
         elif response_type == 'oadrUpdateReport':

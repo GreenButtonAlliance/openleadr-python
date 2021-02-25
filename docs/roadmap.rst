@@ -21,6 +21,55 @@ Version Main features
 Changelog
 ---------
 
+openleadr 0.5.22
+~~~~~~~~~~~~~~~~
+
+Released: 25 February 2021
+
+Bug fixes:
+- Restored fingerprint validation of VTN messages by the VEN
+
+openleadr 0.5.21
+~~~~~~~~~~~~~~~~
+
+Released: 24 February 2021
+
+Bug fixes:
+- The fingerprint calculator used to be incorrect, which is now fixed
+- Added reply_to limit in the oadrRequestEvent template
+
+New features:
+- Added support for oadrCreatedReport and on_created_report handlers
+
+Changes:
+- More explicit response descriptions from the VTN when sending messages to the wrong endpoint
+
+openleadr 0.5.20
+~~~~~~~~~~~~~~~~
+
+Released: 8 February 2021
+
+Bug fixes:
+
+- Corrected the oadrRequestReregistration mechanism in both the VEN and the VTN
+- Include venID and requestID in oadrUpdateReport messages from the VEN
+- Show friendlier warnings when using invalid signal names and signal types.
+
+New features:
+
+- Added possibility to use pre-allocated ven_id's on the VEN side (thanks, @jmuraca)
+- Added hook points into the VTN's message handling (first preliminary version)
+- Added a reference to the OpenLEADR VTN 'server' in the aiohttp 'app'.
+  This can be useful when you add your own custom routes (for internal API communication),
+  and you need to reference the OpenLEADR server. It is available in the aiohttp requests under
+  ``request.app['server']``.
+
+Changes:
+
+- The fingerprint_lookup function has been deprecated in favor of a ven_lookup function.
+  This allows the VTN to better determine if a message should be processed or not.
+  Please see the updated docs for more info.
+
 openleadr 0.5.19
 ~~~~~~~~~~~~~~~~
 
