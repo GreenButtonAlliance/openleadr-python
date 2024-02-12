@@ -48,7 +48,8 @@ class OpenADRServer:
     def __init__(self, vtn_id, cert=None, key=None, passphrase=None, fingerprint_lookup=None,
                  show_fingerprint=True, http_port=8080, http_host='127.0.0.1', http_cert=None,
                  http_key=None, http_key_passphrase=None, http_path_prefix='/OpenADR2/Simple/2.0b',
-                 requested_poll_freq=timedelta(seconds=10), http_ca_file=None, ven_lookup=None):
+                 requested_poll_freq=timedelta(seconds=10), http_ca_file=None, ven_lookup=None,
+                 verify_message_signatures=True, show_server_cert_domain=True):
         """
         Create a new OpenADR VTN (Server).
 
@@ -73,11 +74,18 @@ class OpenADRServer:
         :param str http_key_passphrase: The passphrase for the HTTP private key.
         :param ven_lookup: A callback that takes a ven_id and returns a dict containing the
                            ven_id, ven_name, fingerprint and registration_id.
+        :param verify_message_signatures: Whether to verify message signatures.
         """
         # Set up the message queues
 
         self.app = web.Application()
         self.services = {}
+
+        # Globally enable or disable the verification of message
+        # signatures. Only used in combination with TLS.
+        VTNService.verify_message_signatures = verify_message_signatures
+
+        # Create the separate OpenADR services
         self.services['event_service'] = EventService(vtn_id)
         self.services['report_service'] = ReportService(vtn_id)
         self.services['poll_service'] = PollService(vtn_id)
@@ -88,8 +96,7 @@ class OpenADRServer:
         self.services['poll_service'].report_service = self.services['report_service']
 
         # Set up the HTTP handlers for the services
-        if http_path_prefix[-1] == "/":
-            http_path_prefix = http_path_prefix[:-1]
+        http_path_prefix = http_path_prefix.rstrip("/")
         self.app.add_routes([web.post(f"{http_path_prefix}/{s.__service_name__}", s.handler)
                              for s in self.services.values()])
 
@@ -102,9 +109,9 @@ class OpenADRServer:
         self.http_path_prefix = http_path_prefix
 
         # Create SSL context for running the server
-        if http_cert and http_key:
-            self.ssl_context = ssl.create_default_context(cafile=http_ca_file,
-                                                          purpose=ssl.Purpose.CLIENT_AUTH)
+        if http_cert and http_key and http_ca_file:
+            self.ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            self.ssl_context.load_verify_locations(http_ca_file)
             self.ssl_context.verify_mode = ssl.CERT_REQUIRED
             self.ssl_context.load_cert_chain(http_cert, http_key, http_key_passphrase)
         else:
@@ -123,6 +130,10 @@ class OpenADRServer:
                       f"{utils.certificate_fingerprint(cert)}".center(80))
                 print("Please deliver this fingerprint to the VENs that connect to you.".center(80))
                 print("You do not need to keep this a secret.".center(80))
+                if show_server_cert_domain:
+                    print("")
+                    print("The VTN Certificate is valid for the following domain(s):".center(80))
+                    print(utils.certificate_domain(cert).center(80))
                 print("*" * 80)
                 print("")
         VTNService._create_message = partial(create_message, cert=cert, key=key,
@@ -169,8 +180,8 @@ class OpenADRServer:
         """
         await self.app_runner.cleanup()
 
-    def add_event(self, ven_id, signal_name, signal_type, intervals, callback=None, event_id=None,
-                  targets=None, targets_by_type=None, target=None, response_required='always',
+    def add_event(self, ven_id, signal_name, signal_type, intervals, callback=None, delivery_callback=None,
+                  event_id=None, targets=None, targets_by_type=None, target=None, response_required='always',
                   market_context="oadr://unknown.context", notification_period=None,
                   ramp_up_period=None, recovery_period=None, signal_target_mrid=None):
         """
@@ -180,7 +191,8 @@ class OpenADRServer:
         :param str signal_name: The OpenADR name of the signal; one of openleadr.objects.SIGNAL_NAME
         :param str signal_type: The OpenADR type of the signal; one of openleadr.objects.SIGNAL_TYPE
         :param str intervals: A list of intervals with a dtstart, duration and payload member.
-        :param str callback: A callback function for when your event has been accepted (optIn) or refused (optOut).
+        :param callable callback: A callback function for when your event has been accepted (optIn) or refused (optOut).
+        :param callable delivery_callback: A callback function for when your event has been delivered (oadrDistributeEvent).
         :param list targets: A list of Targets that this Event applies to.
         :param target: A single target for this event.
         :param dict targets_by_type: A dict of targets, grouped by type.
@@ -253,10 +265,10 @@ class OpenADRServer:
                               event_signals=[event_signal],
                               targets=targets,
                               response_required=response_required)
-        self.add_raw_event(ven_id=ven_id, event=event, callback=callback)
+        self.add_raw_event(ven_id=ven_id, event=event, callback=callback, delivery_callback=delivery_callback)
         return event_id
 
-    def add_raw_event(self, ven_id, event, callback=None):
+    def add_raw_event(self, ven_id, event, callback=None, delivery_callback=None):
         """
         Add a new event to the queue for a specific VEN.
         :param str ven_id: The ven_id to which this event should be distributed.
@@ -282,6 +294,17 @@ class OpenADRServer:
         if ven_id not in self.events:
             self.events[ven_id] = []
 
+        # Add some default properties to the event if they are not already set
+        if not utils.getmember(event, 'event_descriptor.event_status', None):
+            utils.setmember(event, 'event_descriptor.event_status', 'far')
+        if not utils.getmember(event, 'event_descriptor.active_period', None):
+            active_period = utils.get_active_period_from_intervals(
+                [utils.get_active_period_from_intervals(utils.getmember(signal, 'intervals'), False) for signal in utils.getmember(event, 'event_signals')]
+            )
+            utils.setmember(event, 'active_period', active_period)
+        if not utils.getmember(event, 'event_descriptor.priority', None):
+            utils.setmember(event, 'event_descriptor.priority', 0)
+
         # Add event to the queue
         self.events[ven_id].append(event)
         self.events_updated[ven_id] = True
@@ -289,18 +312,24 @@ class OpenADRServer:
         # Add the callback for the response to this event
         if callback is not None:
             self.event_callbacks[event_id] = (event, callback)
+        if delivery_callback is not None:
+            self.event_delivery_callbacks[event_id] = delivery_callback
         return event_id
 
     def cancel_event(self, ven_id, event_id):
         """
         Mark the indicated event as cancelled.
         """
+        if ven_id not in self.events:
+            logger.warning(f"Attempted to cancel event {event_id} for "
+                           f"ven_id {ven_id}, but this ven_id does not exist.")
+            return
+
         event = utils.find_by(self.events[ven_id], 'event_descriptor.event_id', event_id)
         if not event:
             logger.error("""The event you tried to cancel was not found. """
-                         """Was looking for event_id {event_id} for ven {ven_id}."""
-                         """Only found these: [getmember(e, 'event_descriptor.event_id')
-                                               for e in self.events[ven_id]]""")
+                         f"""Was looking for event_id {event_id} for ven {ven_id}."""
+                         f"""Only found these: {[utils.getmember(e, 'event_descriptor.event_id') for e in self.events[ven_id]]}""")
             return
 
         # Set the Event Status to cancelled
@@ -345,3 +374,7 @@ class OpenADRServer:
     @property
     def event_callbacks(self):
         return self.services['event_service'].event_callbacks
+
+    @property
+    def event_delivery_callbacks(self):
+        return self.services['event_service'].event_delivery_callbacks

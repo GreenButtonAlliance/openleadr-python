@@ -17,6 +17,7 @@
 from asyncio import iscoroutine
 from http import HTTPStatus
 import logging
+import traceback
 
 from aiohttp import web
 from lxml.etree import XMLSyntaxError
@@ -31,6 +32,9 @@ logger = logging.getLogger('openleadr')
 
 
 class VTNService:
+
+    verify_message_signatures = True
+
     def __init__(self, vtn_id):
         self.vtn_id = vtn_id
         self.handlers = {}
@@ -78,10 +82,12 @@ class VTNService:
             if request.secure and 'ven_id' in message_payload:
                 if hasattr(self, 'fingerprint_lookup'):
                     await authenticate_message(request, message_tree, message_payload,
-                                               fingerprint_lookup=self.fingerprint_lookup)
+                                               fingerprint_lookup=self.fingerprint_lookup,
+                                               verify_message_signature=self.verify_message_signatures)
                 elif hasattr(self, 'ven_lookup'):
                     await authenticate_message(request, message_tree, message_payload,
-                                               ven_lookup=self.ven_lookup)
+                                               ven_lookup=self.ven_lookup,
+                                               verify_message_signature=self.verify_message_signatures)
                 else:
                     logger.error("Could not authenticate this VEN because "
                                  "you did not provide a 'ven_lookup' function. Please see "
@@ -146,6 +152,7 @@ class VTNService:
         except Exception as err:
             # In case of some other error, return a HTTP 500
             logger.error(f"The VTN server encountered an error: {err.__class__.__name__}: {err}")
+            logger.error(traceback.format_exc())
             response = web.Response(status=HTTPStatus.INTERNAL_SERVER_ERROR)
         else:
             # We've successfully handled this message
@@ -173,7 +180,7 @@ class VTNService:
                 response_type, response_payload = 'oadrResponse', {}
 
             response_payload['vtn_id'] = self.vtn_id
-            if 'ven_id' in message_payload:
+            if 'ven_id' in message_payload and not response_payload.get('ven_id'):
                 response_payload['ven_id'] = message_payload['ven_id']
 
             response_payload['response'] = {'request_id': message_payload.get('request_id', None),

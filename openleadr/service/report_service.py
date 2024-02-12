@@ -84,10 +84,18 @@ class ReportService(VTNService):
         else:
             mode = 'full'
 
-        if payload['reports'] is None:
-            return
+        if payload.get('reports') is None:
+            # If the client does not send any reports, reply with an empty oadrRegisteredReport message.
+            return 'oadrRegisteredReport', {'report_requests': []}
 
         for report in payload['reports']:
+            if payload['ven_id'] not in self.registered_reports:
+                self.registered_reports[payload['ven_id']] = []
+
+            report_copy = report.copy()
+            report_copy['report_name'] = report_copy['report_name'][9:]
+            self.registered_reports[payload['ven_id']].append(report_copy)
+
             if report['report_name'] == 'METADATA_TELEMETRY_STATUS':
                 if mode == 'compact':
                     results = [self.on_register_report(ven_id=payload['ven_id'],
@@ -115,10 +123,6 @@ class ReportService(VTNService):
                 elif mode == 'full':
                     results = await utils.await_if_required(self.on_register_report(report))
             elif report['report_name'] in ('METADATA_HISTORY_USAGE', 'METADATA_HISTORY_GREENBUTTON'):
-                if payload['ven_id'] not in self.registered_reports:
-                    self.registered_reports[payload['ven_id']] = []
-                report['report_name'] = report['report_name'][9:]
-                self.registered_reports[payload['ven_id']].append(report)
                 report_requests.append(None)
                 continue
             else:
@@ -283,6 +287,14 @@ class ReportService(VTNService):
         for requested_report in self.requested_reports[ven_id]:
             if requested_report.report_request_id not in self.created_reports[ven_id]:
                 logger.warning(f"The requested report with id {requested_report.report_request_id} "
-                                "was not created by the VEN. Yoy may want to contact the VEN to "
-                                "determine the problem. The requested reports was: \n"
-                                f"{requested_report}")
+                               "was not created by the VEN. Yoy may want to contact the VEN to "
+                               "determine the problem. The requested reports was: \n"
+                               f"{requested_report}")
+
+    @handler('oadrRegisteredReport')
+    async def registered_report(self, payload):
+        if not hasattr(self, 'on_registered_report'):
+            logger.info(f"VEN {payload['ven_id']} indicated that it has registered "
+                        "your VTN-provided reports, but you are not handling that yet.")
+        else:
+            await utils.await_if_required(self.on_registered_report(payload))

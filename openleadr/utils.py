@@ -19,6 +19,7 @@ from dataclasses import is_dataclass, asdict
 from collections import OrderedDict
 from openleadr import enums, objects
 import asyncio
+import os
 import re
 import ssl
 import hashlib
@@ -130,10 +131,25 @@ def normalize_dict(ordered_dict):
 
         # Group all reports as a list of dicts under the key "pending_reports"
         if key == "pending_reports":
-            if isinstance(d[key], dict) and 'report_request_id' in d[key] \
-               and isinstance(d[key]['report_request_id'], list):
-                d['pending_reports'] = [{'report_request_id': rrid}
-                                        for rrid in d['pending_reports']['report_request_id']]
+            # If there are pending reports, turn them into a list of dicts,
+            # each with a single 'report_request_id' key.
+            if isinstance(d[key], dict) and 'report_request_id' in d[key]:
+
+                # If there is only one report_request_id, make sure it is
+                # turned into a list before further processing.
+                if not isinstance(d[key]['report_request_id'], list):
+                    d[key]['report_request_id'] = [d[key]['report_request_id']]
+
+                # When collecting the report_request_ids, make sure even numeric
+                # ids get turned into strings.
+                d[key] = [{'report_request_id': str(rrid)}
+                          for rrid in d[key]['report_request_id']
+                          if d[key]['report_request_id'] is not None]
+
+            # If there are no pending reports, make sure we get an empty list back
+            # so any iteration can proceed as normal.
+            elif d[key] is None:
+                d[key] = []
 
         # Group all events al a list of dicts under the key "events"
         elif key == "event" and isinstance(d[key], list):
@@ -388,6 +404,25 @@ def certificate_fingerprint(certificate_str):
     return certificate_fingerprint_from_der(der_bytes)
 
 
+def certificate_domain(cert):
+    from cryptography import x509
+    from cryptography.hazmat.backends import default_backend
+
+
+    if os.path.exists(cert):
+        with open(cert) as file:
+            cert = file.read()
+    elif cert.startswith(b"-----BEGIN CERTIFICATE-----"):
+        pass
+    else:
+        raise ValueError("Could not read certificate when attempting "
+                         "to determine the domain for it. Certificate "
+                         "should be a file or a PEM-encoded string.")
+    parsed_certificate = x509.load_pem_x509_certificate(cert, default_backend())
+    domains = parsed_certificate.subject.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME)
+    return ", ".join([domain.value for domain in domains])
+
+
 def extract_pem_cert(tree):
     """
     Extract a given X509 certificate inside an XML tree and return the standard
@@ -591,7 +626,7 @@ def determine_event_status(active_period):
         active_period_start = active_period_start.astimezone(timezone.utc)
         setmember(active_period, 'dtstart', active_period_start)
     active_period_end = active_period_start + getmember(active_period, 'duration')
-    if now >= active_period_end:
+    if now >= active_period_end and getmember(active_period, 'duration').total_seconds() > 0:
         return 'completed'
     if now >= active_period_start:
         return 'active'
@@ -776,7 +811,9 @@ def order_events(events, limit=None, offset=None):
     for event in events:
         if getmember(event, 'event_descriptor.event_status') != enums.EVENT_STATUS.CANCELLED:
             event_status = determine_event_status(getmember(event, 'active_period'))
-            setmember(event, 'event_descriptor.event_status', event_status)
+            if getmember(event, 'event_descriptor.event_status') != event_status:
+                setmember(event, 'event_descriptor.event_status', event_status)
+                setmember(event, 'event_descriptor.created_date_time', datetime.now(timezone.utc))
 
     # Short circuit if we only have one event:
     if len(events) == 1:

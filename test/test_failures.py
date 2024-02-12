@@ -3,6 +3,7 @@ from openleadr.utils import generate_id, certificate_fingerprint
 from openleadr import messaging, errors, objects
 from datetime import datetime, timezone, timedelta
 import pytest
+import pytest_asyncio
 from aiohttp import web
 import os
 import logging
@@ -55,7 +56,7 @@ async def test_vtn_no_create_party_registration_handler(caplog):
     await server.stop()
     await client.stop()
     #await asyncio.sleep(0)
-    assert 'No VEN ID received from the VTN, aborting.' in caplog.messages
+    assert 'No RegistrationID received from the VTN, aborting.' in caplog.messages
     assert ("You should implement and register your own on_create_party_registration "
             "handler if you want VENs to be able to connect to you. This handler will "
             "receive a registration request and should return either 'False' (if the "
@@ -68,6 +69,7 @@ async def test_invalid_signature_error(start_server_with_signatures, caplog):
                            vtn_url=f'https://localhost:{SERVER_PORT}/OpenADR2/Simple/2.0b',
                            cert=VEN_CERT,
                            key=VEN_KEY,
+                           ca_file=CA_FILE,
                            vtn_fingerprint=VTN_FINGERPRINT)
     message = client._create_message('oadrPoll', ven_id='ven123')
     fake_sig = b64encode("HelloThere".encode('utf-8')).decode('utf-8')
@@ -128,6 +130,7 @@ async def test_invalid_signature_error(start_server_with_signatures, caplog):
                            vtn_url=f'https://localhost:{SERVER_PORT}/OpenADR2/Simple/2.0b',
                            cert=VEN_CERT,
                            key=VEN_KEY,
+                           ca_file=CA_FILE,
                            vtn_fingerprint=VTN_FINGERPRINT)
     message = client._create_message('oadrPoll', ven_id='ven123')
     fake_sig = b64encode("HelloThere".encode('utf-8')).decode('utf-8')
@@ -148,6 +151,7 @@ def test_replay_protect_message_too_old(caplog):
                            vtn_url=f'https://localhost:{SERVER_PORT}/OpenADR2/Simple/2.0b',
                            cert=VEN_CERT,
                            key=VEN_KEY,
+                           ca_file=CA_FILE,
                            vtn_fingerprint=VTN_FINGERPRINT)
     _temp = messaging.REPLAY_PROTECT_MAX_TIME_DELTA
     messaging.REPLAY_PROTECT_MAX_TIME_DELTA = timedelta(seconds=0)
@@ -163,6 +167,7 @@ def test_replay_protect_repeated_message(caplog):
                            vtn_url=f'https://localhost:{SERVER_PORT}/OpenADR2/Simple/2.0b',
                            cert=VEN_CERT,
                            key=VEN_KEY,
+                           ca_file=CA_FILE,
                            vtn_fingerprint=VTN_FINGERPRINT)
     message = client._create_message('oadrPoll', ven_id='ven123')
     tree = etree.fromstring(message.encode('utf-8'))
@@ -177,6 +182,7 @@ def test_replay_protect_missing_nonce(caplog):
                            vtn_url=f'https://localhost:{SERVER_PORT}/OpenADR2/Simple/2.0b',
                            cert=VEN_CERT,
                            key=VEN_KEY,
+                           ca_file=CA_FILE,
                            vtn_fingerprint=VTN_FINGERPRINT)
     message = client._create_message('oadrPoll', ven_id='ven123')
     message = re.sub('<dsp:nonce>.*?</dsp:nonce>', '', message)
@@ -191,6 +197,7 @@ def test_replay_protect_malformed_nonce(caplog):
                            vtn_url=f'https://localhost:{SERVER_PORT}/OpenADR2/Simple/2.0b',
                            cert=VEN_CERT,
                            key=VEN_KEY,
+                           ca_file=CA_FILE,
                            vtn_fingerprint=VTN_FINGERPRINT)
     message = client._create_message('oadrPoll', ven_id='ven123')
     message = re.sub('<dsp:timestamp>.*?</dsp:timestamp>', '', message)
@@ -307,7 +314,7 @@ async def _client_on_report(report):
 def fingerprint_lookup(ven_id):
     return VEN_FINGERPRINT
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def start_server():
     server = OpenADRServer(vtn_id=VTN_ID, http_port=SERVER_PORT)
     server.add_handler('on_create_party_registration', _on_create_party_registration)
@@ -315,7 +322,7 @@ async def start_server():
     yield
     await server.stop()
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def start_server_with_signatures():
     server = OpenADRServer(vtn_id=VTN_ID,
                            cert=VTN_CERT,

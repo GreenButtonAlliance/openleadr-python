@@ -31,6 +31,7 @@ class EventService(VTNService):
         self.completed_event_ids = {}   # Holds the ids of completed events
         self.event_callbacks = {}
         self.event_opt_types = {}
+        self.event_delivery_callbacks = {}
 
     @handler('oadrRequestEvent')
     async def request_event(self, payload):
@@ -45,6 +46,10 @@ class EventService(VTNService):
                     event_status = utils.getmember(event, 'event_descriptor.event_status')
                     # Pop the event from the events so that this is the last time it is communicated
                     if event_status == enums.EVENT_STATUS.COMPLETED:
+                        if ven_id not in self.completed_event_ids:
+                            self.completed_event_ids[ven_id] = []
+                        event_id = utils.getmember(event, 'event_descriptor.event_id')
+                        self.completed_event_ids[ven_id].append(event_id)
                         self.events[ven_id].pop(self.events[ven_id].index(event))
             else:
                 events = None
@@ -60,6 +65,11 @@ class EventService(VTNService):
         if events is None:
             return 'oadrResponse', {}
         else:
+            # Fire the delivery callbacks, if any
+            for event in events:
+                event_id = utils.getmember(event, 'event_descriptor.event_id')
+                if event_id in self.event_delivery_callbacks:
+                    await utils.await_if_required(self.event_delivery_callbacks[event_id]())
             return 'oadrDistributeEvent', {'events': events}
         return 'oadrResponse', result
 
